@@ -2,8 +2,9 @@ name: Daily Telegram Report
 
 on:
   schedule:
-    - cron: "30 17 * * *"  # هر روز 21:00 به وقت تهران
+    - cron: "30 17 * * *"
   workflow_dispatch:
+
 
 jobs:
   send:
