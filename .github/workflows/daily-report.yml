@@ -2,8 +2,8 @@ name: Daily Telegram Report
 
 on:
   schedule:
-    - cron: "30 17 * * *"   # هر روز ساعت 21:00 تهران (17:30 UTC)
-  workflow_dispatch: {}
+    - cron: "30 17 * * *"  # هر روز 21:00 به وقت تهران
+  workflow_dispatch:
 
 jobs:
   send:
@@ -12,150 +12,95 @@ jobs:
     steps:
       - name: Install deps
         run: |
-          python3 -m pip install --upgrade pip
-          pip install jdatetime requests
+          sudo apt-get update
+          pip install requests jdatetime
 
       - name: Build message (Jalali date + TGJU + Nobitex)
         id: build
         run: |
           python3 - <<'PY'
-          import re, json, requests
-          from datetime import datetime, timedelta
-          import jdatetime
+          import requests, jdatetime, datetime, json
 
-          # ---------- helpers
-          def iran_now():
-              return datetime.utcnow() + timedelta(hours=3, minutes=30)
+          # --- تاریخ شمسی ---
+          now_teh = datetime.datetime.utcnow() + datetime.timedelta(hours=3, minutes=30)
+          j_now = jdatetime.datetime.fromgregorian(datetime=now_teh)
+          weekday_map = ["دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یک‌شنبه"]
+          weekday = weekday_map[j_now.weekday()]
+          jalali_date = f"{weekday} {j_now.day} {j_now.j_months_fa[j_now.month-1]} {j_now.year}"
+          greg_date = now_teh.strftime("%d %B %Y – ساعت %H:%M")
 
-          fa_map = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
-          def fa_num(s): return str(s).translate(fa_map)
-
-          def commatize(n):
-              if n is None: return "—"
-              s = re.sub(r"[^\d.]", "", str(n))
-              if s == "": return "—"
-              i, _, d = s.partition(".")
-              out = f"{int(i):,}"
-              if d: out += "." + d
-              return fa_num(out)
-
-          def pct_text(p):
-              if p is None: return "—"
-              s = re.sub(r"[^\d\.\-]", "", str(p))
-              if s == "": return "—"
-              v = float(s)
-              if v > 0: trend = "رشد"
-              elif v < 0: trend = "افت"
-              else: trend = "بدون تغییر"
-              return f"{fa_num(f'{abs(v):.2f}')}٪ {trend}"
-
-          # ---------- TGJU scraping (last_price, change_percent)
-          def tgju_fetch(url):
-              r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=20)
-              r.raise_for_status()
-              h = r.text
-              m_price = re.search(r'"last_price"\s*:\s*"?(?P<v>-?\d[\d,\.]*)', h)
-              m_pct   = re.search(r'"change_percent"\s*:\s*"?(?P<v>-?\d[\d\.]*)', h)
-              price = m_price.group("v") if m_price else None
-              pct   = m_pct.group("v") if m_pct else None
-              return price, pct
-
-          TGJU = {
-            "gold18": "https://www.tgju.org/profile/gold-18",
-            "coin_emami": "https://www.tgju.org/profile/sekke",
-            "coin_nim":   "https://www.tgju.org/profile/sekke-nim",
-            "coin_rob":   "https://www.tgju.org/profile/sekke-rob",
-            "coin_gerami":"https://www.tgju.org/profile/sekke-gerami",
-            "usd": "https://www.tgju.org/profile/price_dollar_rl",
-            "eur": "https://www.tgju.org/profile/price_eur",
-            "aed": "https://www.tgju.org/profile/price_aed",
-            "xauusd": "https://www.tgju.org/profile/ounce"
+          # --- دریافت داده از TGJU ---
+          tgju_items = {
+              "طلای ۱۸ عیار": "geram18",
+              "سکه امامی": "sekee",
+              "نیم‌سکه": "sekne-nim",
+              "ربع‌سکه": "sekne-rob",
+              "دلار": "price_dollar_rl",
+              "یورو": "price_eur"
           }
 
-          g18, g18p = tgju_fetch(TGJU["gold18"])
-          emami, _  = tgju_fetch(TGJU["coin_emami"])
-          nim,   _  = tgju_fetch(TGJU["coin_nim"])
-          rob,   _  = tgju_fetch(TGJU["coin_rob"])
-          gerami,_  = tgju_fetch(TGJU["coin_gerami"])
-          usd, usdp = tgju_fetch(TGJU["usd"])
-          eur, eurp = tgju_fetch(TGJU["eur"])
-          aed, aedp = tgju_fetch(TGJU["aed"])
-          xau, _    = tgju_fetch(TGJU["xauusd"])
+          tgju_data = {}
+          for name, code in tgju_items.items():
+              url = f"https://www.tgju.org/chart-summary/{code}"
+              r = requests.get(url)
+              r.raise_for_status()
+              data = r.json()
+              p = data['current']['p'] if 'current' in data else None
+              try:
+                  p = int(float(p.replace(',', '')))
+              except:
+                  pass
+              tgju_data[name] = p
 
-          # ---------- Nobitex IRT (تومان)   (BTC/ETH/SOL/BNB/USDT)
-          # آدرس عمومی وضعیت بازار برای چند نماد
-          symbols = ["BTCIRT","ETHIRT","SOLIRT","BNBIRT","USDTIRT"]
-          nb = requests.get(
-              "https://api.nobitex.ir/market/stats",
-              params={"symbol": ",".join(symbols)},
-              timeout=20,
-              headers={"User-Agent":"Mozilla/5.0"}
-          ).json().get("statistics", {})
+          # --- دریافت داده رمزارزها از نوبیتکس ---
+          nobitex_symbols = {
+              "BTC": "btc-usdt",
+              "ETH": "eth-usdt",
+              "SOL": "sol-usdt",
+              "BNB": "bnb-usdt",
+              "USDT": "usdt-rls"
+          }
 
-          def nobi_latest(sym):
-              d = nb.get(sym, {})
-              return d.get("latest")
+          nobi_prices = {}
+          for sym, pair in nobitex_symbols.items():
+              r = requests.get(f"https://api.nobitex.ir/market/stats?symbol={pair}")
+              r.raise_for_status()
+              data = r.json()['stats'][pair]
+              nobi_prices[sym] = float(data['latest'])
 
-          btc_irt = nobi_latest("BTCIRT")
-          eth_irt = nobi_latest("ETHIRT")
-          sol_irt = nobi_latest("SOLIRT")
-          bnb_irt = nobi_latest("BNBIRT")
-          usdt_irt= nobi_latest("USDTIRT")
-
-          # ---------- Date (Jalali + Gregorian)
-          now_g = iran_now()
-          now_j = jdatetime.datetime.fromgregorian(datetime=now_g)
-          weekdays = ["دوشنبه","سه‌شنبه","چهارشنبه","پنجشنبه","جمعه","شنبه","یکشنبه"]
-          months_j = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور",
-                      "مهر","آبان","آذر","دی","بهمن","اسفند"]
-          months_g = ["ژانویه","فوریه","مارس","آوریل","مه","ژوئن",
-                      "ژوئیه","اوت","سپتامبر","اکتبر","نوامبر","دسامبر"]
-
-          header = f"{weekdays[now_j.weekday()]} {fa_num(now_j.day)} {months_j[now_j.month-1]} {fa_num(now_j.year)} | {fa_num(now_g.day)} {months_g[now_g.month-1]} {fa_num(now_g.year)} – ساعت ۲۱:۰۰"
-
-          # ---------- Build sections
-          gold_line = f"طلای ۱۸ عیار امروز با {pct_text(g18p)} به {commatize(g18)} تومان رسید."
-          coin_lines = "\n".join([
-            f"🔹 سکه امامی: {commatize(emami)} تومان",
-            f"🔹 نیم‌سکه: {commatize(nim)} تومان",
-            f"🔹 ربع‌سکه: {commatize(rob)} تومان",
-            f"🔹 سکه گرمی: {commatize(gerami)} تومان",
-          ])
-
-          fx_line = " | ".join([
-            f"دلار: {commatize(usd)} تومان",
-            f"یورو: {commatize(eur)} تومان",
-            f"درهم: {commatize(aed)} تومان"
-          ])
-
-          crypto_lines = " | ".join([
-            f"بیت‌کوین: {commatize(btc_irt)} تومان",
-            f"اتریوم: {commatize(eth_irt)} تومان",
-            f"سولانا: {commatize(sol_irt)} تومان",
-            f"بایننس‌کوین: {commatize(bnb_irt)} تومان",
-            f"تتر: {commatize(usdt_irt)} تومان",
-          ])
-
-          # ounce line (دلاری)
-          ounce_line = f"اونس جهانی طلا: {commatize(xau)} دلار"
+          # تبدیل تتر به تومان
+          t_usdt = nobi_prices['USDT']
 
           msg = f"""📊 گزارش روز بازار طلا، ارز و رمزارزها
-          {header}
+🗓️ {jalali_date} | {greg_date}
 
-          🟡 بازار طلا
-          {gold_line}
-          {coin_lines}
+🟡 بازار طلا
+طلای ۱۸ عیار: {tgju_data['طلای ۱۸ عیار']:,} تومان
+سکه امامی: {tgju_data['سکه امامی']:,} تومان
+نیم‌سکه: {tgju_data['نیم‌سکه']:,} تومان
+ربع‌سکه: {tgju_data['ربع‌سکه']:,} تومان
 
-          💵 بازار ارز
-          {fx_line}
+💵 بازار ارز
+دلار: {tgju_data['دلار']:,} تومان | یورو: {tgju_data['یورو']:,} تومان
 
-          🪙 بازار رمزارزها
-          {crypto_lines}
+🪙 بازار رمزارزها (بر اساس نوبیتکس)
+بیت‌کوین: {nobi_prices['BTC']:.0f} USDT ≈ {nobi_prices['BTC'] * t_usdt:,.0f} تومان
+اتریوم: {nobi_prices['ETH']:.0f} USDT ≈ {nobi_prices['ETH'] * t_usdt:,.0f} تومان
+سولانا: {nobi_prices['SOL']:.0f} USDT ≈ {nobi_prices['SOL'] * t_usdt:,.0f} تومان
+بایننس‌کوین: {nobi_prices['BNB']:.0f} USDT ≈ {nobi_prices['BNB'] * t_usdt:,.0f} تومان
+تتر: {t_usdt:,.0f} تومان
 
-          ({fa_num(now_j.strftime('%Y/%m/%d'))} – ارسال خودکار GitHub Actions)
-          """.strip()
+(ارسال خودکار GitHub Actions – {now_teh.strftime("%Y/%m/%d - %H:%M")} Tehran)
+"""
 
-          print("::set-output name=message::" + json.dumps(msg, ensure_ascii=False))
+          print(msg)
+          with open("msg.txt", "w", encoding="utf-8") as f:
+              f.write(msg)
+          print("✅ Message built successfully")
+
+          # خروجی برای اکشن بعدی
+          msg_json = json.dumps(msg, ensure_ascii=False)
+          print(f"::set-output name=message::{msg_json}")
           PY
 
       - name: Send to Telegram
