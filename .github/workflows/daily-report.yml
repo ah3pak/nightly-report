@@ -1,8 +1,8 @@
-name: Daily Telegram Report (Multi-source, resilient)
+name: Daily Telegram Report (multi-source, resilient)
 
 on:
   schedule:
-    - cron: "30 17 * * *"  # اجرا هر روز ساعت 17:30 UTC ≈ 21:00 Tehran
+    - cron: "30 17 * * *"   # هر روز 17:30 UTC ≈ 21:00 Tehran
   workflow_dispatch: {}
 
 jobs:
@@ -10,15 +10,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.10
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 jdatetime
@@ -34,7 +34,8 @@ jobs:
         id: build
         run: |
           python3 - <<'PY'
-          import requests, re, json, os, datetime, jdatetime
+          # build_msg.py (inlined)
+          import requests, re, json, os, datetime, jdatetime, time
           from bs4 import BeautifulSoup
 
           def first_number_from_text(s):
@@ -49,32 +50,34 @@ jobs:
                       return None
               return None
 
-          def try_get_text_from_url(url):
+          def get_text(url, headers=None, timeout=10):
               try:
-                  r = requests.get(url, timeout=10, headers={"User-Agent":"Mozilla/5.0"})
+                  h = headers or {"User-Agent":"Mozilla/5.0"}
+                  r = requests.get(url, timeout=timeout, headers=h)
                   r.raise_for_status()
                   return r.text
               except:
                   return None
 
-          prev_values = {}
+          # load previous values if present
+          prev = {}
           prev_path = './prev/last-values.json'
           if os.path.exists(prev_path):
               try:
                   with open(prev_path, 'r', encoding='utf-8') as f:
-                      prev_values = json.load(f)
+                      prev = json.load(f)
               except:
-                  prev_values = {}
+                  prev = {}
 
-          # Time
+          # time (Tehran)
           now_teh = datetime.datetime.utcnow() + datetime.timedelta(hours=3, minutes=30)
-          j_now = jdatetime.datetime.fromgregorian(datetime=now_teh)
+          jnow = jdatetime.datetime.fromgregorian(datetime=now_teh)
           weekday_map = ["دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یک‌شنبه"]
-          weekday = weekday_map[j_now.weekday()]
-          jalali_date = f"{weekday} {j_now.day} {j_now.j_months_fa[j_now.month-1]} {j_now.year}"
+          weekday = weekday_map[jnow.weekday()]
+          jalali_date = f"{weekday} {jnow.day} {jnow.j_months_fa[jnow.month-1]} {jnow.year}"
           greg_date = now_teh.strftime("%d %B %Y – ساعت %H:%M")
 
-          # Preferred sources
+          # preferred sources (can be extended)
           tgju_map = {
               "gold_18": "https://www.tgju.org/chart-summary/geram18",
               "sekee": "https://www.tgju.org/chart-summary/sekee",
@@ -84,8 +87,8 @@ jobs:
               "euro": "https://www.tgju.org/chart-summary/price_eur"
           }
 
-          fallback_html_urls = [
-              # add your preferred fallback pages here (examples)
+          fallback_html_pages = [
+              # add additional reliable fallback pages here if available
               "https://tradersarena.ir/industries/gold-funds",
               "https://talasea.ir",
               "https://goldnewsiran.ir"
@@ -98,13 +101,11 @@ jobs:
               "BNB": "https://api.coingecko.com/api/v3/simple/price?ids=binancecoin&vs_currencies=usd"
           }
 
-          nobitex_pairs = {
-              "tether": "https://api.nobitex.ir/market/stats?symbol=usdt-rls"
-          }
+          nobitex_tether = "https://api.nobitex.ir/market/stats?symbol=usdt-rls"
 
           results = {}
 
-          def fetch_tgju_value(url):
+          def fetch_tgju(url):
               try:
                   r = requests.get(url, timeout=10)
                   r.raise_for_status()
@@ -117,9 +118,9 @@ jobs:
               except:
                   return None
 
-          def fetch_from_fallback_pages():
-              for url in fallback_html_urls:
-                  txt = try_get_text_from_url(url)
+          def fallback_scan_pages():
+              for u in fallback_html_pages:
+                  txt = get_text(u)
                   if not txt:
                       continue
                   soup = BeautifulSoup(txt, 'html.parser')
@@ -129,28 +130,28 @@ jobs:
                       return v
               return None
 
-          # Gold and fiat
-          g = fetch_tgju_value(tgju_map['gold_18'])
+          # GOLD & FIAT
+          g = fetch_tgju(tgju_map['gold_18'])
           if g:
               try:
                   results['gold_18'] = int(float(str(g).replace(',', '')))
               except:
                   results['gold_18'] = None
           else:
-              fb = fetch_from_fallback_pages()
-              results['gold_18'] = int(fb) if fb else prev_values.get('gold_18')
+              fb = fallback_scan_pages()
+              results['gold_18'] = int(fb) if fb else prev.get('gold_18')
 
-          for key in ['sekee','nim','rob','dollar','euro']:
+          for k in ['sekee','nim','rob','dollar','euro']:
               try:
-                  val = fetch_tgju_value(tgju_map.get(key))
+                  val = fetch_tgju(tgju_map.get(k))
                   if val:
-                      results[key] = int(float(str(val).replace(',', '')))
+                      results[k] = int(float(str(val).replace(',', '')))
                   else:
-                      results[key] = prev_values.get(key)
+                      results[k] = prev.get(k)
               except:
-                  results[key] = prev_values.get(key)
+                  results[k] = prev.get(k)
 
-          # Crypto USD via CoinGecko
+          # CRYPTO via CoinGecko (USD)
           crypto_usd = {}
           for k,u in coingecko_map.items():
               try:
@@ -168,10 +169,10 @@ jobs:
               except:
                   pass
 
-          # Nobitex USDT->rial for conversion (fallback)
+          # get local USDT rate from Nobitex (to convert USD->Toman)
           t_usdt = None
           try:
-              r = requests.get(nobitex_pairs['tether'], timeout=10)
+              r = requests.get(nobitex_tether, timeout=10)
               if r.status_code == 200:
                   j = r.json()
                   stats = j.get('stats', {})
@@ -180,21 +181,21 @@ jobs:
           except:
               t_usdt = None
 
-          # combine crypto
+          # combine crypto results
           for s in ['BTC','ETH','SOL','BNB']:
-              usd = crypto_usd.get(s) or prev_values.get(f"{s}_usd")
-              if usd:
-                  results[f"{s}_usd"] = usd
+              usd_v = crypto_usd.get(s) or prev.get(f"{s}_usd")
+              if usd_v:
+                  results[f"{s}_usd"] = usd_v
                   if t_usdt:
                       try:
-                          results[f"{s}_toman"] = int(float(usd) * float(t_usdt))
+                          results[f"{s}_toman"] = int(float(usd_v) * float(t_usdt))
                       except:
-                          results[f"{s}_toman"] = prev_values.get(f"{s}_toman")
+                          results[f"{s}_toman"] = prev.get(f"{s}_toman")
               else:
-                  results[f"{s}_usd"] = prev_values.get(f"{s}_usd")
-                  results[f"{s}_toman"] = prev_values.get(f"{s}_toman")
+                  results[f"{s}_usd"] = prev.get(f"{s}_usd")
+                  results[f"{s}_toman"] = prev.get(f"{s}_toman")
 
-          # Save last-values.json
+          # Save last-values.json for next run fallback
           out = {k: v for k, v in results.items()}
           out['_ts'] = now_teh.strftime("%Y-%m-%d %H:%M:%S")
           with open('last-values.json', 'w', encoding='utf-8') as f:
@@ -207,7 +208,7 @@ jobs:
                   return "—"
 
           def pick(key):
-              return out.get(key) or prev_values.get(key) or None
+              return out.get(key) or prev.get(key) or None
 
           gold_display = fmt(pick('gold_18'))
           sekee_display = fmt(pick('sekee'))
@@ -216,24 +217,23 @@ jobs:
           dollar_display = fmt(pick('dollar'))
           euro_display = fmt(pick('euro'))
 
-          btc_usd = pick('BTC_usd') or pick('BTC_usd')
-          btc_usd_display = f"{btc_usd:,.0f}" if isinstance(btc_usd, (int, float)) else "—"
+          btc_usd = pick('BTC_usd')
+          btc_usd_display = f"{btc_usd:,.0f}" if isinstance(btc_usd,(int,float)) else "—"
 
           eth_usd = pick('ETH_usd')
-          eth_display = f"{eth_usd:,.0f}" if isinstance(eth_usd, (int, float)) else "—"
+          eth_display = f"{eth_usd:,.0f}" if isinstance(eth_usd,(int,float)) else "—"
 
-          sol_display = f"{pick('SOL_usd'):,}" if isinstance(pick('SOL_usd'), (int, float)) else "—"
+          sol_display = f"{pick('SOL_usd'):,}" if isinstance(pick('SOL_usd'),(int,float)) else "—"
 
-          # approximate gram (if gold available)
           gram_display = "—"
           try:
-              if out.get('gold_18'):
-                  gram_display = f"{int(out.get('gold_18') * 1.56):,}"
-              elif prev_values.get('gold_18'):
-                  gram_display = f"{int(prev_values.get('gold_18') * 1.56):,}"
+              gval = out.get('gold_18') or prev.get('gold_18')
+              if gval:
+                  gram_display = f"{int(gval * 1.56):,}"
           except:
               gram_display = "—"
 
+          # build message exactly in desired format (one blank line between dynamic and footer)
           dynamic_text = f"""📊 گزارش روز بازار طلا، ارز و رمزارزها
 🗓️ {jalali_date} | {greg_date}
 
@@ -273,12 +273,14 @@ https://t.me/trustme_prop
           with open("msg.txt", "w", encoding="utf-8") as f:
               f.write(final_msg)
 
-          print("--- preview ---")
-          print(final_msg[:600])
-          print("...")
-
-          # expose outputs via files (no set-output)
+          print("Message built and saved to msg.txt")
           PY
+
+      - name: Show preview (first 40 lines)
+        run: |
+          echo "---- msg.txt preview ----"
+          sed -n '1,40p' msg.txt || true
+          echo "---- end preview ----"
 
       - name: Send to Telegram (single message)
         env:
@@ -297,7 +299,7 @@ https://t.me/trustme_prop
           echo "Telegram response:"
           cat response.json || true
 
-      - name: Upload artifacts (last values + last msg)
+      - name: Upload artifacts (last-values + msg)
         uses: actions/upload-artifact@v4
         with:
           name: last-values
