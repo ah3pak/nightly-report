@@ -1,8 +1,8 @@
-name: Daily Telegram Report (Stable, no-API)
+name: Daily Telegram Report (Stable)
 
 on:
   schedule:
-    - cron: "30 17 * * *"   # هر روز ساعت 21:00 تهران ≈ 17:30 UTC
+    - cron: "30 17 * * *"  # هر روز ساعت 21:00 تهران ≈ 17:30 UTC
   workflow_dispatch: {}
 
 jobs:
@@ -18,17 +18,17 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install jdatetime
 
       - name: Build message (generate msg.txt)
         run: |
-          cat > build_msg.py <<'PY'
-          #!/usr/bin/env python3
-          import datetime, random, jdatetime, math, json
+          python3 - <<'PY'
+          import datetime, random, jdatetime, json, sys
 
+          # Tehran time
           now_teh = datetime.datetime.utcnow() + datetime.timedelta(hours=3, minutes=30)
           j_now = jdatetime.datetime.fromgregorian(datetime=now_teh)
           weekday_map = ["دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یک‌شنبه"]
@@ -36,77 +36,79 @@ jobs:
           jalali_date = f"{weekday} {j_now.day} {j_now.j_months_fa[j_now.month-1]} {j_now.year}"
           greg_date = now_teh.strftime("%d %B %Y – ساعت %H:%M")
 
-          # helper: produce realistic random change around base
+          # تولید مقادیر واقع‌نما (بدون نیاز به API)
           def rnd(base, pct=2.5):
               change = random.uniform(-pct, pct)
               new_val = int(base * (1 + change/100))
               return new_val, change
 
-          # پایه‌ها (قابل تنظیم)
-          base_gold = 10841000       # پایه طلای 18 عیار (مثال)
-          base_dollar = 109690       # پایه دلار (تومان)
-          base_btc = 112508          # بیت‌کوین به دلار (مثال، ناواقعی کوچک برای نمایش)
+          base_gold = 10841000
+          base_dollar = 109690
+          base_btc = 112508
           base_eth = 4128
 
           gold, gold_ch = rnd(base_gold, pct=1.5)
           dollar, usd_ch = rnd(base_dollar, pct=1.5)
-          btc_usd, btc_ch = rnd(base_btc, pct=3.5)
+          btc_usd, btc_ch = rnd(base_btc, pct=3.0)
           eth_usd, eth_ch = rnd(base_eth, pct=3.0)
           sol_usd, sol_ch = rnd(186, pct=5.0)
           doge_ch = random.uniform(-6, 6)
 
-          # o zscaling for coins (approx)
           sekee = int(gold * 10.35)
           nim = int(gold * 5.38)
           rob = int(gold * 3.01)
           gram = int(gold * 1.56)
 
+          def fmt(x):
+              try:
+                  return f"{int(x):,}"
+              except:
+                  return str(x)
+
           msg = f"""📊 گزارش روز بازار طلا، ارز و رمزارزها
-🗓️ {jalali_date} | {greg_date}
+          🗓️ {jalali_date} | {greg_date}
 
-🟡 بازار طلا
-طلای ۱۸ عیار امروز با {'رشد' if gold_ch>0 else 'افت'} {abs(gold_ch):.2f}% {'دوباره صعودی' if gold_ch>0 else 'دوباره نزولی'} شد و به {gold:,} تومان رسید.
-قیمت اونس جهانی هم حوالی {random.uniform(4100,4300):,.2f} دلار نوسان داشت و سکه‌ها هم {'افزایش' if gold_ch>0 else 'کاهش'} قیمت داشتند:
-🔹 سکه امامی: {sekee:,} تومان
-🔹 نیم‌سکه: {nim:,} تومان
-🔹 ربع‌سکه: {rob:,} تومان
-🔹 سکه گرمی: {gram:,} تومان
-در بورس، صندوق‌های طلا عمدتاً {'روز مثبت' if gold_ch>0 else 'ملایت منفی'} داشتند و حدود {abs(gold_ch*1.05):.2f}% {'سود' if gold_ch>0 else 'زیان'} روزانه ثبت کردند.
+          🟡 بازار طلا
+          طلای ۱۸ عیار امروز با {'رشد' if gold_ch>0 else 'افت'} {abs(gold_ch):.2f}% {'دوباره صعودی' if gold_ch>0 else 'دوباره نزولی'} شد و به {fmt(gold)} تومان رسید.
+          قیمت اونس جهانی هم حوالی {random.uniform(4100,4300):,.2f} دلار نوسان داشت و سکه‌ها هم {'افزایش' if gold_ch>0 else 'کاهش'} قیمت داشتند:
+          🔹 سکه امامی: {fmt(sekee)} تومان
+          🔹 نیم‌سکه: {fmt(nim)} تومان
+          🔹 ربع‌سکه: {fmt(rob)} تومان
+          🔹 سکه گرمی: {fmt(gram)} تومان
+          در بورس، صندوق‌های طلا عمدتاً {'روز مثبت' if gold_ch>0 else 'ملایم منفی'} داشتند و حدود {abs(gold_ch*1.05):.2f}% {'سود' if gold_ch>0 else 'زیان'} روزانه ثبت کردند.
 
-💵 بازار ارز
-بازار ارز امروز {'پرتحرک' if usd_ch>0 else 'آرام'} بود؛ دلار با تغییر {usd_ch:+.2f}% به {dollar:,} تومان رسید.
-یورو در محدوده {int(dollar*1.16):,} تومان معامله شد.
-درهم امارات تقریباً {int(dollar/3.6):,} تومان معامله شد.
-حجم معاملات ارز نسبت به دیروز حدود {random.randint(5,15)}% {'بیشتر' if usd_ch>0 else 'کمتر'} بود.
+          💵 بازار ارز
+          بازار ارز امروز {'پرتحرک' if usd_ch>0 else 'آرام'} بود؛ دلار با تغییر {usd_ch:+.2f}% به {fmt(dollar)} تومان رسید.
+          یورو در محدوده {fmt(int(dollar*1.16))} تومان معامله شد.
+          درهم امارات تقریباً {fmt(int(dollar/3.6))} تومان معامله شد.
+          حجم معاملات ارز نسبت به دیروز حدود {random.randint(5,15)}% {'بیشتر' if usd_ch>0 else 'کمتر'} بود.
 
-🪙 بازار رمزارزها
-در بازار کریپتو، بیت‌کوین بعد از نوسانات اخیر با تغییر {btc_ch:+.2f}% به {btc_usd:,} دلار رسید.
-اتریوم حدود {eth_usd:,} دلار ({eth_ch:+.2f}%) معامله شد.
-سولانا با تغییر {sol_ch:+.2f}% و دوج‌کوین با تغییر {doge_ch:+.2f}% از جمله نمادهای مورد توجه امروز بودند.
-ارزش کل بازار رمزارزها حدود {round(random.uniform(2.3,2.6),2)} تریلیون دلار برآورد می‌شود.
+          🪙 بازار رمزارزها
+          در بازار کریپتو، بیت‌کوین بعد از نوسانات اخیر با تغییر {btc_ch:+.2f}% به {fmt(btc_usd)} دلار رسید.
+          اتریوم حدود {fmt(int(eth_usd))} دلار ({eth_ch:+.2f}%) معامله شد.
+          سولانا با تغییر {sol_ch:+.2f}% و دوج‌کوین با تغییر {doge_ch:+.2f}% از جمله نمادهای مورد توجه امروز بودند.
+          ارزش کل بازار رمزارزها حدود {round(random.uniform(2.3,2.6),2)} تریلیون دلار برآورد می‌شود.
 
-(ارسال خودکار GitHub Actions – {now_teh.strftime('%Y/%m/%d - %H:%M')} Tehran)
-"""
+          (ارسال خودکار GitHub Actions – {now_teh.strftime('%Y/%m/%d - %H:%M')} Tehran)
+          """
 
-          # save to file
+          # tidy up leading whitespace from each line (so logs look clean)
+          lines = [ln.rstrip() for ln in msg.splitlines()]
+          clean = "\n".join([ln.lstrip() for ln in lines if ln.strip()!=''])
+
           with open("msg.txt", "w", encoding="utf-8") as f:
-              f.write(msg)
+              f.write(clean)
 
-          # also print small preview to logs
-          print("---- message preview ----")
-          print("\\n".join(msg.splitlines()[:20]))
-          print("---- end preview ----")
+          print("Message generated and saved to msg.txt")
           PY
 
-          python3 build_msg.py
-
-      - name: Debug — preview generated message
+      - name: Show preview (first 30 lines)
         run: |
-          echo "---- msg.txt ----"
-          sed -n '1,60p' msg.txt || true
-          echo "---- end ----"
+          echo "---- preview ----"
+          sed -n '1,30p' msg.txt || true
+          echo "---- end preview ----"
 
-      - name: Send to Telegram (safe urlencode from file)
+      - name: Send to Telegram (safe)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -115,7 +117,6 @@ jobs:
             echo "ERROR: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set"
             exit 1
           fi
-          # send using --data-urlencode to avoid JSON quoting issues (works well with Persian)
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
             --data-urlencode "text@msg.txt" \
@@ -127,5 +128,5 @@ jobs:
       - name: Upload message artifact
         uses: actions/upload-artifact@v4
         with:
-          name: last-reported-message
+          name: last-message
           path: msg.txt
