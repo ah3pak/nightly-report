@@ -2,8 +2,8 @@ name: Daily Telegram Report
 
 on:
   schedule:
-    - cron: "30 17 * * *"   # هر روز ساعت ۲۰:۰۰ به وقت تهران (۱۷:۳۰ UTC)
-  workflow_dispatch:          # برای اجرای دستی از داخل Actions
+    - cron: "30 17 * * *"   # هر روز ساعت 21:00 تهران ≈ 17:30 UTC
+  workflow_dispatch: {}
 
 jobs:
   send:
@@ -13,78 +13,79 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
+          pip install --upgrade pip
           pip install requests jdatetime
 
       - name: Build message (Jalali date + TGJU + Nobitex)
         id: build
         run: |
           python3 - <<'PY'
-          import requests, jdatetime, datetime, json, os
+import requests, jdatetime, datetime, json, os
 
-          def safe_get_json(url, headers=None, timeout=10):
-              try:
-                  r = requests.get(url, headers=headers or {}, timeout=timeout)
-                  if r.status_code == 200:
-                      return r.json()
-              except Exception:
-                  pass
-              return None
+def safe_get_json(url, headers=None, timeout=10):
+    try:
+        r = requests.get(url, headers=headers or {}, timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
 
-          # --- تاریخ شمسی ---
-          now_teh = datetime.datetime.utcnow() + datetime.timedelta(hours=3, minutes=30)
-          j_now = jdatetime.datetime.fromgregorian(datetime=now_teh)
-          weekday_map = ["دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یک‌شنبه"]
-          weekday = weekday_map[j_now.weekday()]
-          jalali_date = f"{weekday} {j_now.day} {j_now.j_months_fa[j_now.month-1]} {j_now.year}"
-          greg_date = now_teh.strftime("%d %B %Y – ساعت %H:%M")
+# --- تاریخ شمسی ---
+now_teh = datetime.datetime.utcnow() + datetime.timedelta(hours=3, minutes=30)
+j_now = jdatetime.datetime.fromgregorian(datetime=now_teh)
+weekday_map = ["دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یک‌شنبه"]
+weekday = weekday_map[j_now.weekday()]
+jalali_date = f"{weekday} {j_now.day} {j_now.j_months_fa[j_now.month-1]} {j_now.year}"
+greg_date = now_teh.strftime("%d %B %Y – ساعت %H:%M")
 
-          # --- دریافت داده از TGJU ---
-          tgju_items = {
-              "طلای ۱۸ عیار": "geram18",
-              "سکه امامی": "sekee",
-              "نیم‌سکه": "sekne-nim",
-              "ربع‌سکه": "sekne-rob",
-              "دلار": "price_dollar_rl",
-              "یورو": "price_eur"
-          }
+# --- دریافت داده از TGJU ---
+tgju_items = {
+    "طلای ۱۸ عیار": "geram18",
+    "سکه امامی": "sekee",
+    "نیم‌سکه": "sekne-nim",
+    "ربع‌سکه": "sekne-rob",
+    "دلار": "price_dollar_rl",
+    "یورو": "price_eur"
+}
 
-          tgju_data = {}
-          for name, code in tgju_items.items():
-              data = safe_get_json(f"https://www.tgju.org/chart-summary/{code}")
-              if data and 'current' in data and 'p' in data['current']:
-                  try:
-                      tgju_data[name] = int(float(data['current']['p'].replace(',', '')))
-                  except:
-                      tgju_data[name] = "—"
-              else:
-                  tgju_data[name] = "—"
+tgju_data = {}
+for name, code in tgju_items.items():
+    data = safe_get_json(f"https://www.tgju.org/chart-summary/{code}")
+    if data and 'current' in data and 'p' in data['current']:
+        try:
+            tgju_data[name] = int(float(str(data['current']['p']).replace(',', '')))
+        except:
+            tgju_data[name] = "—"
+    else:
+        tgju_data[name] = "—"
 
-          # --- دریافت رمزارزها از Nobitex ---
-          nobi_symbols = {
-              "BTC": "btc-usdt",
-              "ETH": "eth-usdt",
-              "SOL": "sol-usdt",
-              "BNB": "bnb-usdt",
-              "USDT": "usdt-rls"
-          }
+# --- دریافت رمزارزها از Nobitex ---
+nobi_symbols = {
+    "BTC": "btc-usdt",
+    "ETH": "eth-usdt",
+    "SOL": "sol-usdt",
+    "BNB": "bnb-usdt",
+    "USDT": "usdt-rls"
+}
 
-          nobi_prices = {}
-          for s, pair in nobi_symbols.items():
-              r = safe_get_json(f"https://api.nobitex.ir/market/stats?symbol={pair}")
-              try:
-                  nobi_prices[s] = float(r['stats'][pair]['latest'])
-              except:
-                  nobi_prices[s] = None
+nobi_prices = {}
+for s, pair in nobi_symbols.items():
+    r = safe_get_json(f"https://api.nobitex.ir/market/stats?symbol={pair}")
+    try:
+        nobi_prices[s] = float(r['stats'][pair]['latest'])
+    except:
+        nobi_prices[s] = None
 
-          t_usdt = nobi_prices.get("USDT", 0)
+t_usdt = nobi_prices.get("USDT", None)
 
-          def fmt(x):
-              try:
-                  return f"{int(x):,}"
-              except:
-                  return str(x)
+def fmt(x):
+    try:
+        return f"{int(x):,}"
+    except:
+        return str(x)
 
-          msg = f"""📊 گزارش روز بازار طلا، ارز و رمزارزها
+msg = f"""📊 گزارش روز بازار طلا، ارز و رمزارزها
 🗓️ {jalali_date} | {greg_date}
 
 🟡 بازار طلا
@@ -99,30 +100,45 @@ jobs:
 🪙 بازار رمزارزها (نوبیتکس)
 """
 
-          for k in ("BTC","ETH","SOL","BNB"):
-              p = nobi_prices.get(k)
-              if p and t_usdt:
-                  msg += f"{k}: {p:.2f} USDT ≈ {p*t_usdt:,.0f} تومان\n"
-              elif p:
-                  msg += f"{k}: {p:.2f} USDT\n"
-              else:
-                  msg += f"{k}: —\n"
+for k in ("BTC","ETH","SOL","BNB"):
+    p = nobi_prices.get(k)
+    if p and t_usdt:
+        msg += f"{k}: {p:.2f} USDT ≈ {p*t_usdt:,.0f} تومان\n"
+    elif p:
+        msg += f"{k}: {p:.2f} USDT\n"
+    else:
+        msg += f"{k}: —\n"
 
-          if t_usdt:
-              msg += f"تتر: {t_usdt:,.0f} تومان\n"
+if t_usdt:
+    msg += f"تتر: {t_usdt:,.0f} تومان\n"
 
-          msg += f"\n(ارسال خودکار GitHub Actions – {now_teh.strftime('%Y/%m/%d - %H:%M')} Tehran)"
+msg += f"\n(ارسال خودکار GitHub Actions – {now_teh.strftime('%Y/%m/%d - %H:%M')} Tehran)"
 
-          with open("msg.txt", "w", encoding="utf-8") as f:
-              f.write(msg)
+# ذخیره محلی (Artifact/manual check)
+with open("msg.txt", "w", encoding="utf-8") as f:
+    f.write(msg)
 
-          # خروجی برای اکشن بعدی (روش جدید GitHub)
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as gh:
-              gh.write(f"message<<EOF\n{msg}\nEOF\n")
-          PY
+# خروجی برای اکشن بعدی (روش درست: append به GITHUB_OUTPUT)
+gh_out = os.environ.get("GITHUB_OUTPUT")
+if gh_out:
+    with open(gh_out, "a", encoding="utf-8") as gh:
+        gh.write("message<<EOF\n")
+        gh.write(msg)
+        gh.write("\nEOF\n")
+else:
+    # fallback for older runners (خیلی نادر)
+    print("::set-output name=message::" + json.dumps(msg, ensure_ascii=False))
+print("✅ Message built")
+PY
 
       - name: Send to Telegram
         run: |
           curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -H "Content-Type: application/json" \
             -d "{\"chat_id\":\"${{ secrets.TELEGRAM_CHAT_ID }}\",\"text\":${{ steps.build.outputs.message }},\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}"
+
+      - name: Upload message artifact (msg.txt)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-msg
+          path: msg.txt
