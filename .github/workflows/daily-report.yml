@@ -2,7 +2,7 @@ name: Daily Telegram Report
 
 on:
   schedule:
-    - cron: "30 17 * * *" # هر روز ساعت 20:00 به وقت تهران
+    - cron: "30 17 * * *" # هر روز ساعت 21:00 تهران ≈ 17:30 UTC
   workflow_dispatch:
 
 jobs:
@@ -20,23 +20,25 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update -y
+          python -m pip install --upgrade pip
           pip install requests jdatetime
 
       - name: Build message (Jalali date + TGJU + Nobitex)
         run: |
           python3 - <<'PY'
-          import requests, jdatetime, datetime
-
-          # --- تاریخ شمسی ---
+          import requests, jdatetime, datetime, json
+          
+          # زمان تهران
           now_teh = datetime.datetime.utcnow() + datetime.timedelta(hours=3, minutes=30)
           j_now = jdatetime.datetime.fromgregorian(datetime=now_teh)
           weekday_map = ["دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یک‌شنبه"]
           weekday = weekday_map[j_now.weekday()]
-          jalali_date = f"{weekday} {j_now.day} {j_now.j_months_fa[j_now.month-1]} {j_now.year}"
+          jalali_months = j_now.j_months_fa
+          jalali_date = f"{weekday} {j_now.day} {jalali_months[j_now.month-1]} {j_now.year}"
           greg_date = now_teh.strftime("%d %B %Y – ساعت %H:%M")
-
-          # --- دریافت داده از TGJU ---
+          
+          # TGJU آیتم‌ها (مناسب برای endpoints chart-summary)
           tgju_items = {
               "طلای ۱۸ عیار": "geram18",
               "سکه امامی": "sekee",
@@ -45,21 +47,32 @@ jobs:
               "دلار": "price_dollar_rl",
               "یورو": "price_eur"
           }
-
+          
           tgju_data = {}
           for name, code in tgju_items.items():
-              url = f"https://www.tgju.org/chart-summary/{code}"
-              r = requests.get(url)
-              r.raise_for_status()
-              data = r.json()
-              p = data['current']['p'] if 'current' in data else None
               try:
-                  p = int(float(str(p).replace(',', '')))
-              except:
-                  p = 0
-              tgju_data[name] = p
-
-          # --- دریافت داده رمزارزها از نوبیتکس ---
+                  url = f"https://www.tgju.org/chart-summary/{code}"
+                  r = requests.get(url, timeout=15)
+                  r.raise_for_status()
+                  data = r.json()
+                  p = None
+                  if isinstance(data, dict):
+                      # تلاش برای خواندن مسیر معمول
+                      cur = data.get("current") or {}
+                      p = cur.get("p") if cur else data.get("p")
+                  # تبدیل به عدد یا نگه‌داری رشته
+                  if p is None:
+                      tgju_data[name] = 0
+                  else:
+                      # remove commas and cast if ممکن
+                      try:
+                          tgju_data[name] = int(float(str(p).replace(',', '')))
+                      except:
+                          tgju_data[name] = str(p)
+              except Exception as e:
+                  tgju_data[name] = 0
+          
+          # Nobitex symbols
           nobitex_symbols = {
               "BTC": "btc-usdt",
               "ETH": "eth-usdt",
@@ -67,48 +80,78 @@ jobs:
               "BNB": "bnb-usdt",
               "USDT": "usdt-rls"
           }
-
+          
           nobi_prices = {}
           for sym, pair in nobitex_symbols.items():
-              r = requests.get(f"https://api.nobitex.ir/market/stats?symbol={pair}")
-              r.raise_for_status()
-              data = r.json()['stats'][pair]
-              nobi_prices[sym] = float(data['latest'])
-
-          # تبدیل تتر به تومان
-          t_usdt = nobi_prices['USDT']
-
+              try:
+                  r = requests.get(f"https://api.nobitex.ir/market/stats?symbol={pair}", timeout=15)
+                  r.raise_for_status()
+                  data = r.json()
+                  stats = data.get("stats", {})
+                  val = stats.get(pair, {}).get("latest")
+                  nobi_prices[sym] = float(val) if val is not None else 0.0
+              except:
+                  nobi_prices[sym] = 0.0
+          
+          t_usdt = nobi_prices.get("USDT", 0.0) or 0.0
+          
+          def fmt(x):
+              try:
+                  return f"{int(x):,}"
+              except:
+                  return str(x)
+          
           msg = f"""📊 گزارش روز بازار طلا، ارز و رمزارزها
-🗓️ {jalali_date} | {greg_date}
-
-🟡 بازار طلا
-طلای ۱۸ عیار: {tgju_data['طلای ۱۸ عیار']:,} تومان
-سکه امامی: {tgju_data['سکه امامی']:,} تومان
-نیم‌سکه: {tgju_data['نیم‌سکه']:,} تومان
-ربع‌سکه: {tgju_data['ربع‌سکه']:,} تومان
-
-💵 بازار ارز
-دلار: {tgju_data['دلار']:,} تومان | یورو: {tgju_data['یورو']:,} تومان
-
-🪙 بازار رمزارزها (بر اساس نوبیتکس)
-بیت‌کوین: {nobi_prices['BTC']:.0f} USDT ≈ {nobi_prices['BTC'] * t_usdt:,.0f} تومان
-اتریوم: {nobi_prices['ETH']:.0f} USDT ≈ {nobi_prices['ETH'] * t_usdt:,.0f} تومان
-سولانا: {nobi_prices['SOL']:.0f} USDT ≈ {nobi_prices['SOL'] * t_usdt:,.0f} تومان
-بایننس‌کوین: {nobi_prices['BNB']:.0f} USDT ≈ {nobi_prices['BNB'] * t_usdt:,.0f} تومان
-تتر: {t_usdt:,.0f} تومان
-
-(ارسال خودکار GitHub Actions – {now_teh.strftime("%Y/%m/%d - %H:%M")} Tehran)
-"""
-
+          🗓️ {jalali_date} | {greg_date}
+          
+          🟡 بازار طلا
+          طلای ۱۸ عیار: {fmt(tgju_data.get('طلای ۱۸ عیار', 0))} تومان
+          سکه امامی: {fmt(tgju_data.get('سکه امامی', 0))} تومان
+          نیم‌سکه: {fmt(tgju_data.get('نیم‌سکه', 0))} تومان
+          ربع‌سکه: {fmt(tgju_data.get('ربع‌سکه', 0))} تومان
+          
+          💵 بازار ارز
+          دلار: {fmt(tgju_data.get('دلار', 0))} تومان | یورو: {fmt(tgju_data.get('یورو', 0))} تومان
+          
+          🪙 بازار رمزارزها (نوبیتکس)
+          بیت‌کوین: {nobi_prices.get('BTC',0):.2f} USDT ≈ {int(nobi_prices.get('BTC',0)*t_usdt):,} تومان
+          اتریوم: {nobi_prices.get('ETH',0):.2f} USDT ≈ {int(nobi_prices.get('ETH',0)*t_usdt):,} تومان
+          سولانا: {nobi_prices.get('SOL',0):.2f} USDT ≈ {int(nobi_prices.get('SOL',0)*t_usdt):,} تومان
+          بایننس‌کوین: {nobi_prices.get('BNB',0):.2f} USDT ≈ {int(nobi_prices.get('BNB',0)*t_usdt):,} تومان
+          تتر: {int(t_usdt):,} تومان
+          
+          (ارسال خودکار GitHub Actions – {now_teh.strftime('%Y/%m/%d - %H:%M')} Tehran)
+          """
+          
+          # پاک‌سازی خطوط اضافی ابتدا/انتها
+          msg = "\n".join([line.rstrip() for line in msg.strip().splitlines()])
+          
           with open("msg.txt", "w", encoding="utf-8") as f:
               f.write(msg)
-
-          print("✅ Message built successfully and saved to msg.txt")
+          
+          print("✅ Message built and saved to msg.txt")
           PY
 
-      - name: Send to Telegram
+      - name: Debug — show short preview of msg
         run: |
-          msg=$(cat msg.txt)
-          curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "{\"chat_id\":\"${{ secrets.TELEGRAM_CHAT_ID }}\",\"text\":\"${msg//\"/\\\"}\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}"
+          echo "---- preview (first 20 lines) ----"
+          head -n 20 msg.txt || true
+          echo "---- end preview ----"
+
+      - name: Send to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "ERROR: Secrets TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set"
+            exit 1
+          fi
+          # ارسال با form-urlencoded تا مشکل نقل‌قول و encoding نباشد
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text@msg.txt" \
+            --data-urlencode "parse_mode=HTML" \
+            --fail -o response.json || (echo "curl failed"; cat response.json || true; exit 1)
+          echo "✅ Message sent; response:"
+          cat response.json || true
