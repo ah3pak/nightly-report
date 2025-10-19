@@ -2,40 +2,33 @@ name: Daily Telegram Report
 
 on:
   schedule:
-    - cron: "30 17 * * *"   # هر روز 17:30 UTC ≈ 21:00 تهران
-  workflow_dispatch:
+    - cron: "30 17 * * *"   # هر روز ساعت ۲۰:۰۰ به وقت تهران (۱۷:۳۰ UTC)
+  workflow_dispatch:          # برای اجرای دستی از داخل Actions
 
 jobs:
   send:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install deps
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          sudo apt-get update -y
           pip install requests jdatetime
 
       - name: Build message (Jalali date + TGJU + Nobitex)
         id: build
         run: |
           python3 - <<'PY'
-          import requests, jdatetime, datetime, json, sys, traceback
+          import requests, jdatetime, datetime, json, os
 
           def safe_get_json(url, headers=None, timeout=10):
               try:
                   r = requests.get(url, headers=headers or {}, timeout=timeout)
                   if r.status_code == 200:
-                      try:
-                          return r.json()
-                      except ValueError:
-                          return None
-                  else:
-                      return None
+                      return r.json()
               except Exception:
-                  return None
+                  pass
+              return None
 
           # --- تاریخ شمسی ---
           now_teh = datetime.datetime.utcnow() + datetime.timedelta(hours=3, minutes=30)
@@ -45,10 +38,10 @@ jobs:
           jalali_date = f"{weekday} {j_now.day} {j_now.j_months_fa[j_now.month-1]} {j_now.year}"
           greg_date = now_teh.strftime("%d %B %Y – ساعت %H:%M")
 
-          # --- دریافت داده از TGJU (مقاوم) ---
+          # --- دریافت داده از TGJU ---
           tgju_items = {
               "طلای ۱۸ عیار": "geram18",
-              "سکه امامی": "gold-24",         # fallback codes — اگر سایت تغییر داشت، مقدار نهایی None خواهد شد
+              "سکه امامی": "sekee",
               "نیم‌سکه": "sekne-nim",
               "ربع‌سکه": "sekne-rob",
               "دلار": "price_dollar_rl",
@@ -57,89 +50,37 @@ jobs:
 
           tgju_data = {}
           for name, code in tgju_items.items():
-              value = None
-              tried = []
-              # لیست آدرس‌های محتمل (ترتیب از محتمل‌تر به کمتر محتمل)
-              candidates = [
-                  f"https://www.tgju.org/chart-summary/{code}",
-                  f"https://www.tgju.org/profile/{code}",
-                  f"https://www.tgju.org/markets/{code}",
-              ]
-              for url in candidates:
-                  tried.append(url)
-                  data = safe_get_json(url, timeout=8)
-                  if data:
-                      # ساختارهای مختلف رو پوشش می‌دیم
-                      # اگر داده current -> p داشته باشه
-                      if isinstance(data, dict):
-                          if 'current' in data and isinstance(data['current'], dict) and 'p' in data['current']:
-                              p = data['current']['p']
-                              try:
-                                  value = int(float(str(p).replace(',', '')))
-                              except:
-                                  value = p
-                              break
-                          # ممکنه خودِ json قیمت رو در کلیدهای دیگری داشته باشه
-                          for k in ['price','p','value','last']:
-                              if k in data:
-                                  try:
-                                      value = int(float(str(data[k]).replace(',', '')))
-                                  except:
-                                      value = data[k]
-                                  break
-                          if value is not None:
-                              break
-              if value is None:
-                  # اگر نتونستیم مقدار رو بگیریم، مقدار قابل نمایش بذاریم
-                  tgju_data[name] = "—"
-                  print(f"[tgju] could not fetch {name}, tried: {tried}", file=sys.stderr)
+              data = safe_get_json(f"https://www.tgju.org/chart-summary/{code}")
+              if data and 'current' in data and 'p' in data['current']:
+                  try:
+                      tgju_data[name] = int(float(data['current']['p'].replace(',', '')))
+                  except:
+                      tgju_data[name] = "—"
               else:
-                  tgju_data[name] = value
+                  tgju_data[name] = "—"
 
-          # --- دریافت داده رمزارزها از نوبیتکس ---
-          nobitex_symbols = {
+          # --- دریافت رمزارزها از Nobitex ---
+          nobi_symbols = {
               "BTC": "btc-usdt",
               "ETH": "eth-usdt",
               "SOL": "sol-usdt",
               "BNB": "bnb-usdt",
-              # تتر/ریال (نوبیتکس ممکنه اسم متفاوت داشته باشه)
               "USDT": "usdt-rls"
           }
 
           nobi_prices = {}
-          for sym, pair in nobitex_symbols.items():
-              price = None
+          for s, pair in nobi_symbols.items():
+              r = safe_get_json(f"https://api.nobitex.ir/market/stats?symbol={pair}")
               try:
-                  r = requests.get(f"https://api.nobitex.ir/market/stats?symbol={pair}", timeout=8)
-                  if r.status_code == 200:
-                      j = r.json()
-                      if 'stats' in j and pair in j['stats']:
-                          price = float(j['stats'][pair].get('latest', 0))
-                      else:
-                          # بعضی وقت‌ها ساختار متفاوته
-                          # fallback: اگر خودش یک مقدار عددی دارد:
-                          if isinstance(j, dict) and 'latest' in j:
-                              price = float(j['latest'])
-                  else:
-                      print(f"[nobitex] non-200 for {pair}: {r.status_code}", file=sys.stderr)
-              except Exception as e:
-                  print(f"[nobitex] error fetching {pair}: {e}", file=sys.stderr)
-              if price is None:
-                  nobi_prices[sym] = None
-              else:
-                  nobi_prices[sym] = price
+                  nobi_prices[s] = float(r['stats'][pair]['latest'])
+              except:
+                  nobi_prices[s] = None
 
-          # تبدیل تتر به تومان (اگر موجود)
-          t_usdt = nobi_prices.get('USDT') or nobi_prices.get('USDT'.upper()) or None
+          t_usdt = nobi_prices.get("USDT", 0)
 
-          # ساخت پیام به شکل خوانا
           def fmt(x):
               try:
-                                          # اگر عدد باشه فرمت هزارگان
-                  if isinstance(x, (int, float)):
-                      return f"{int(x):,}"
-                  else:
-                      return str(x)
+                  return f"{int(x):,}"
               except:
                   return str(x)
 
@@ -147,83 +88,41 @@ jobs:
 🗓️ {jalali_date} | {greg_date}
 
 🟡 بازار طلا
-طلای ۱۸ عیار: {fmt(tgju_data.get('طلای ۱۸ عیار'))} تومان
-سکه امامی: {fmt(tgju_data.get('سکه امامی'))} تومان
-نیم‌سکه: {fmt(tgju_data.get('نیم‌سکه'))} تومان
-ربع‌سکه: {fmt(tgju_data.get('ربع‌سکه'))} تومان
+طلای ۱۸ عیار: {fmt(tgju_data['طلای ۱۸ عیار'])} تومان
+سکه امامی: {fmt(tgju_data['سکه امامی'])} تومان
+نیم‌سکه: {fmt(tgju_data['نیم‌سکه'])} تومان
+ربع‌سکه: {fmt(tgju_data['ربع‌سکه'])} تومان
 
 💵 بازار ارز
-دلار: {fmt(tgju_data.get('دلار'))} تومان | یورو: {fmt(tgju_data.get('یورو'))} تومان
+دلار: {fmt(tgju_data['دلار'])} تومان | یورو: {fmt(tgju_data['یورو'])} تومان
 
 🪙 بازار رمزارزها (نوبیتکس)
 """
 
-          # رمزارزها را با تبدیل تتر (اگر داریم) نمایش می‌کنیم
           for k in ("BTC","ETH","SOL","BNB"):
               p = nobi_prices.get(k)
-              if p is None:
-                  msg += f"{k}: —\n"
+              if p and t_usdt:
+                  msg += f"{k}: {p:.2f} USDT ≈ {p*t_usdt:,.0f} تومان\n"
+              elif p:
+                  msg += f"{k}: {p:.2f} USDT\n"
               else:
-                  if t_usdt:
-                      try:
-                          approx_irr = int(p * t_usdt)
-                          msg += f"{k}: {p:.6g} USDT ≈ {approx_irr:,} تومان\n"
-                      except:
-                          msg += f"{k}: {p:.6g} USDT\n"
-                  else:
-                      msg += f"{k}: {p:.6g} USDT\n"
+                  msg += f"{k}: —\n"
 
           if t_usdt:
-              msg += f"تتر: {int(t_usdt):,} تومان\n"
+              msg += f"تتر: {t_usdt:,.0f} تومان\n"
 
-          msg += f"\n(ارسال خودکار GitHub Actions – {now_teh.strftime('%Y/%m/%d - %H:%M')} Tehran)\n"
+          msg += f"\n(ارسال خودکار GitHub Actions – {now_teh.strftime('%Y/%m/%d - %H:%M')} Tehran)"
 
-          # ذخیره و خروجی
-          with open('msg.txt', 'w', encoding='utf-8') as f:
+          with open("msg.txt", "w", encoding="utf-8") as f:
               f.write(msg)
 
-          print(msg)
-          print("✅ Message built successfully", file=sys.stderr)
-
-          # write output safely to GITHUB_OUTPUT
-          # echo "message<<EOF\n...EOF" >> $GITHUB_OUTPUT
-          out = msg
-          # escape for writing to GITHUB_OUTPUT
-          sys.stdout.write(f"message<<'EOF'\\n{out}\\nEOF\\n")
+          # خروجی برای اکشن بعدی (روش جدید GitHub)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as gh:
+              gh.write(f"message<<EOF\n{msg}\nEOF\n")
           PY
-        shell: bash
-
-      - name: Persist message to GITHUB_OUTPUT
-        # خواندن خط از مرحلهٔ قبل و اپند به GITHUB_OUTPUT — چون step قبل چاپ کرد
-        run: |
-          # read the stdout of the previous step from the job logs is not possible,
-          # ولی ما در مرحله قبل خط "message<<'EOF'..." چاپ کردیم؛ GitHub Actions آن را به خروجی مرحله تبدیل می‌کند.
-          # این خط تضمین می‌کند که اگر مقدار در output موجود باشد، به GITHUB_OUTPUT اضافه شود.
-          if [ -n "${{ steps.build.outputs.message }}" ]; then
-            echo "message<<'EOF'" >> $GITHUB_OUTPUT
-            echo "${{ steps.build.outputs.message }}" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            # fallback: از فایل msg.txt بخوان
-            echo "message<<'EOF'" >> $GITHUB_OUTPUT
-            sed 's/\'\''/'\''"'"'\''/g' msg.txt >> $GITHUB_OUTPUT || cat msg.txt >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
 
       - name: Send to Telegram
-        env:
-          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
-            echo "Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID secret" >&2
-            exit 1
-          fi
-
-          # پیام را مستقیم از فایل ارسال می‌کنیم (فرمت فرم باعث امن‌تر بودنِ متن چندخطی می‌شود)
-          curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -F chat_id="${CHAT_ID}" \
-            -F text="$(cat msg.txt)" \
-            -F parse_mode="HTML" \
-            -F disable_web_page_preview=true
+          curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\":\"${{ secrets.TELEGRAM_CHAT_ID }}\",\"text\":${{ steps.build.outputs.message }},\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}"
