@@ -3,7 +3,7 @@ name: Daily Telegram Report
 on:
   schedule:
     - cron: "30 17 * * *"   # 21:00 تهران
-  workflow_dispatch: {}      # اجرای دستی
+  workflow_dispatch: {}
 
 jobs:
   send:
@@ -16,7 +16,6 @@ jobs:
           python3 - <<'PY'
           from datetime import datetime, timedelta
           import json, os
-          # زمان تهران (UTC+3:30)
           now_iran = datetime.utcnow() + timedelta(hours=3, minutes=30)
           today_ir = now_iran.strftime("%Y/%m/%d - %H:%M (Tehran)")
 
@@ -39,13 +38,19 @@ jobs:
           (ارسال خودکار GitHub Actions – %s)
           """ % today_ir
 
-          # خروجی مرحله برای step بعدی
-          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
-              out.write("message=" + json.dumps(msg) + "\n")
+          with open("message.json","w",encoding="utf-8") as f:
+              json.dump({
+                  "chat_id": os.environ["CHAT_ID"],
+                  "text": msg,
+                  "parse_mode": "HTML",
+                  "disable_web_page_preview": True
+              }, f, ensure_ascii=False)
           PY
+        env:
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      - name: Send to Telegram
+      - name: Send to Telegram (fixed)
         run: |
           curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -H "Content-Type: application/json" \
-            -d "{\"chat_id\":\"${{ secrets.TELEGRAM_CHAT_ID }}\",\"text\":${{ steps.build.outputs.message }},\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}"
+            --data-binary @message.json
